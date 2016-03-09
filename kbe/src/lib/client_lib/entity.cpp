@@ -69,6 +69,8 @@ baseMailbox_(base),
 position_(),
 serverPosition_(),
 direction_(),
+clientPos_(FLT_MAX, FLT_MAX, FLT_MAX),
+clientDir_(FLT_MAX, FLT_MAX, FLT_MAX),
 pClientApp_(NULL),
 aspect_(id),
 velocity_(3.0f),
@@ -340,7 +342,7 @@ void Entity::onUpdatePropertys(MemoryStream& s)
 }
 
 //-------------------------------------------------------------------------------------
-void Entity::writeToDB(void* data, void* extra)
+void Entity::writeToDB(void* data, void* extra1, void* extra2)
 {
 }
 
@@ -669,7 +671,7 @@ void Entity::cancelController(uint32 id)
 //-------------------------------------------------------------------------------------
 PyObject* Entity::__py_pyCancelController(PyObject* self, PyObject* args)
 {
-	uint16 currargsSize = PyTuple_Size(args);
+	uint16 currargsSize = (uint16)PyTuple_Size(args);
 	Entity* pobj = static_cast<Entity*>(self);
 
 	uint32 id = 0;

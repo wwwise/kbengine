@@ -2,6 +2,7 @@ KBEngine
 ========
 
 [![Build Status](https://travis-ci.org/kbengine/kbengine.svg)](https://travis-ci.org/kbengine/kbengine)
+[![Appveyor (Windows) Build  Status](https://ci.appveyor.com/api/projects/status/github/kbengine/kbengine?branch=master&svg=true)](https://ci.appveyor.com/project/kbengine/kbengine/branch/master)
 
 ##Homepage
 http://www.kbengine.org
@@ -61,4 +62,8 @@ acatadog, colin
 理论上只需要不断扩展硬件就能够不断增加承载上限，单台机器的承载上限取决于游戏逻辑本身的复杂度。)
 
 
+
+
+
+[![Bitdeli Badge](https://d2weczhvl823v0.cloudfront.net/kbengine/kbengine/trend.png)](https://bitdeli.com/free "Bitdeli Badge")
 

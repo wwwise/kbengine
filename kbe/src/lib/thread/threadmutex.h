@@ -45,11 +45,38 @@ along with KBEngine.  If not, see <http://www.gnu.org/licenses/>.
 
 namespace KBEngine{ namespace thread{
 
-class ThreadMutex 
+class ThreadMutexNull
+{
+public:
+	ThreadMutexNull(void)
+	{
+	}
+
+	virtual ~ThreadMutexNull(void)
+	{
+	}
+
+	virtual void lockMutex(void)
+	{
+	}
+
+	virtual void unlockMutex(void)
+	{
+	}
+};
+
+class ThreadMutex : public ThreadMutexNull
 {
 public:
 	ThreadMutex(void)
 	{
+		THREAD_MUTEX_INIT(mutex_);
+	}
+
+	ThreadMutex(const ThreadMutex& v)
+	{
+		// 这里不允许拷贝构造mutex_，这是非常危险的
+		// 会造成多次THREAD_MUTEX_DELETE
 		THREAD_MUTEX_INIT(mutex_);
 	}
 
@@ -58,12 +85,12 @@ public:
 		THREAD_MUTEX_DELETE(mutex_);
 	}	
 	
-	void lockMutex(void)
+	virtual void lockMutex(void)
 	{
 		THREAD_MUTEX_LOCK(mutex_);
 	}
 
-	void unlockMutex(void)
+	virtual void unlockMutex(void)
 	{
 		THREAD_MUTEX_UNLOCK(mutex_);
 	}

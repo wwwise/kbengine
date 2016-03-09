@@ -57,6 +57,7 @@ class EntityCoordinateNode;
 class Controller;
 class Controllers;
 class Space;
+class VolatileInfo;
 
 namespace Network
 {
@@ -166,7 +167,6 @@ public:
 	INLINE Direction3D& direction();
 	INLINE void direction(const Direction3D& dir);
 	DECLARE_PY_GETSET_MOTHOD(pyGetDirection, pySetDirection);
-	
 
 	/**
 		是否在地面上
@@ -300,7 +300,7 @@ public:
 	*/
 	bool canNavigate();
 	uint32 navigate(const Position3D& destination, float velocity, float distance,
-					float maxMoveDistance, float maxDistance, 
+					float maxMoveDistance, float maxSearchDistance,
 					bool faceMovement, int8 layer, PyObject* userData);
 	bool navigatePathPoints(std::vector<Position3D>& outPaths, const Position3D& destination, float maxSearchDistance, int8 layer);
 
@@ -574,6 +574,12 @@ public:
 	INLINE void setDirty(bool dirty = true);
 	INLINE bool isDirty() const;
 	
+	/**
+	VolatileInfo section
+	*/
+	INLINE VolatileInfo* pCustomVolatileinfo(void);
+	DECLARE_PY_GETSET_MOTHOD(pyGetVolatileinfo, pySetVolatileinfo);
+
 private:
 	/** 
 		发送teleport结果到base端
@@ -647,6 +653,9 @@ protected:
 	
 	// 需要持久化的数据是否变脏，如果没有变脏不需要持久化
 	bool													isDirty_;
+
+	// 如果用户有设置过Volatileinfo，则此处创建Volatileinfo，否则为NULL使用ScriptDefModule的Volatileinfo
+	VolatileInfo*											pCustomVolatileinfo_;
 };
 
 }

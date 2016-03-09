@@ -38,6 +38,7 @@ along with KBEngine.  If not, see <http://www.gnu.org/licenses/>.
 #include "rotator_handler.h"
 #include "turn_controller.h"
 #include "pyscript/py_gc.h"
+#include "entitydef/volatileinfo.h"
 #include "entitydef/entity_mailbox.h"
 #include "network/channel.h"	
 #include "network/bundle.h"	
@@ -95,6 +96,7 @@ SCRIPT_GETSET_DECLARE("position",					pyGetPosition,					pySetPosition,				0,		0
 SCRIPT_GETSET_DECLARE("direction",					pyGetDirection,					pySetDirection,				0,		0)
 SCRIPT_GETSET_DECLARE("topSpeed",					pyGetTopSpeed,					pySetTopSpeed,				0,		0)
 SCRIPT_GETSET_DECLARE("topSpeedY",					pyGetTopSpeedY,					pySetTopSpeedY,				0,		0)
+SCRIPT_GETSET_DECLARE("volatileInfo",				pyGetVolatileinfo,				pySetVolatileinfo,			0,		0)
 ENTITY_GETSET_DECLARE_END()
 BASE_SCRIPT_INIT(Entity, 0, 0, 0, 0, 0)	
 
@@ -126,7 +128,8 @@ pControllers_(new Controllers(id)),
 pyPositionChangedCallback_(),
 pyDirectionChangedCallback_(),
 layer_(0),
-isDirty_(true)
+isDirty_(true),
+pCustomVolatileinfo_(NULL)
 {
 	pyPositionChangedCallback_ = std::tr1::bind(&Entity::onPyPositionChanged, this);
 	pyDirectionChangedCallback_ = std::tr1::bind(&Entity::onPyDirectionChanged, this);
@@ -147,6 +150,8 @@ isDirty_(true)
 Entity::~Entity()
 {
 	ENTITY_DECONSTRUCTION(Entity);
+
+	S_RELEASE(pCustomVolatileinfo_);
 
 	S_RELEASE(clientMailbox_);
 	S_RELEASE(baseMailbox_);
@@ -482,6 +487,8 @@ void Entity::onDefDataChanged(const PropertyDescription* propertyDescription, Py
 			if(pChannel == NULL)
 				continue;
 
+			// 这个可能性是存在的，例如数据来源于createWitnessFromStream()
+			// 又如自己的entity还未在目标客户端上创建
 			if(!pEntity->pWitness()->entityInAOI(id()))
 				continue;
 
@@ -804,7 +811,7 @@ void Entity::backupCellData()
 }
 
 //-------------------------------------------------------------------------------------
-void Entity::writeToDB(void* data, void* extra)
+void Entity::writeToDB(void* data, void* extra1, void* extra2)
 {
 	CALLBACK_ID* pCallbackID = static_cast<CALLBACK_ID*>(data);
 	CALLBACK_ID callbackID = 0;
@@ -813,9 +820,39 @@ void Entity::writeToDB(void* data, void* extra)
 		callbackID = *pCallbackID;
 
 	int8 shouldAutoLoad = -1;
-	if(extra)
-		shouldAutoLoad = *static_cast<int8*>(extra);
+	if (extra1)
+		shouldAutoLoad = *static_cast<int8*>(extra1);
 
+	int dbInterfaceIndex = -1;
+
+	if (extra2)
+	{
+		if (strlen(static_cast<char*>(extra2)) > 0)
+		{
+			DBInterfaceInfo* pDBInterfaceInfo = g_kbeSrvConfig.dbInterface(static_cast<char*>(extra2));
+			if (pDBInterfaceInfo->isPure)
+			{
+				ERROR_MSG(fmt::format("Entity::writeToDB: dbInterface({}) is a pure database does not support Entity! "
+					"kbengine[_defs].xml->dbmgr->databaseInterfaces->*->pure\n",
+					static_cast<char*>(extra2)));
+
+				return;
+			}
+
+			int fdbInterfaceIndex = pDBInterfaceInfo->index;
+			if (fdbInterfaceIndex >= 0)
+			{
+				dbInterfaceIndex = fdbInterfaceIndex;
+			}
+			else
+			{
+				ERROR_MSG(fmt::format("Entity::writeToDB: not found dbInterface({})!\n",
+					static_cast<char*>(extra2)));
+
+				return;
+			}
+		}
+	}
 	onWriteToDB();
 	backupCellData();
 
@@ -824,6 +861,7 @@ void Entity::writeToDB(void* data, void* extra)
 	(*pBundle) << this->id();
 	(*pBundle) << callbackID;
 	(*pBundle) << shouldAutoLoad;
+	(*pBundle) << dbInterfaceIndex;
 
 	if(this->baseMailbox())
 	{
@@ -927,10 +965,8 @@ PyObject* Entity::pyHasWitness()
 //-------------------------------------------------------------------------------------
 void Entity::restoreProximitys()
 {
-	if(this->pWitness() && this->pWitness()->pAOITrigger())
-	{
-		((RangeTrigger*)(this->pWitness()->pAOITrigger()))->reinstall(static_cast<CoordinateNode*>(this->pEntityCoordinateNode()));
-	}
+	if(this->pWitness())
+		this->pWitness()->installAOITrigger();
 
 	Controllers::CONTROLLERS_MAP& objects = pControllers_->objects();
 	Controllers::CONTROLLERS_MAP::iterator iter = objects.begin();
@@ -1529,6 +1565,65 @@ PyObject* Entity::pyGetLayer()
 }
 
 //-------------------------------------------------------------------------------------
+int Entity::pySetVolatileinfo(PyObject *value)
+{
+	if (isDestroyed())
+	{
+		PyErr_Format(PyExc_AssertionError, "%s: %d is destroyed!\n",
+			scriptName(), id());
+		PyErr_PrintEx(0);
+		return 0;
+	}
+
+
+	if (!PySequence_Check(value))
+	{
+		PyErr_Format(PyExc_AssertionError, "%s: %d set volatileInfo value is not tuple!\n",
+			scriptName(), id());
+		PyErr_PrintEx(0);
+		return 0;
+	}
+
+	if (PySequence_Size(value) != 4)
+	{
+		PyErr_Format(PyExc_AssertionError, "%s: %d set volatileInfo value is not tuple(position, yaw, pitch, roll)!\n",
+			scriptName(), id());
+		PyErr_PrintEx(0);
+		return 0;
+	}
+
+	if (pCustomVolatileinfo_ == NULL)
+		pCustomVolatileinfo_ = new VolatileInfo();
+
+	PyObject* pyPos = PySequence_GetItem(value, 0);
+	PyObject* pyYaw = PySequence_GetItem(value, 1);
+	PyObject* pyPitch = PySequence_GetItem(value, 2);
+	PyObject* pyRoll = PySequence_GetItem(value, 3);
+
+	pCustomVolatileinfo_->position(float(PyFloat_AsDouble(pyPos)));
+	pCustomVolatileinfo_->yaw(float(PyFloat_AsDouble(pyYaw)));
+	pCustomVolatileinfo_->pitch(float(PyFloat_AsDouble(pyPitch)));
+	pCustomVolatileinfo_->roll(float(PyFloat_AsDouble(pyRoll)));
+
+	Py_DECREF(pyPos);
+	Py_DECREF(pyYaw);
+	Py_DECREF(pyPitch);
+	Py_DECREF(pyRoll);
+
+	return 0;
+}
+
+//-------------------------------------------------------------------------------------
+PyObject* Entity::pyGetVolatileinfo()
+{
+	if (pCustomVolatileinfo_ == NULL)
+		pCustomVolatileinfo_ = new VolatileInfo();
+
+	Py_INCREF(pCustomVolatileinfo_);
+	return pCustomVolatileinfo_;
+}
+
+//-------------------------------------------------------------------------------------
 bool Entity::checkMoveForTopSpeed(const Position3D& position)
 {
 	Position3D movment = position - this->position();
@@ -1745,11 +1840,11 @@ bool Entity::navigatePathPoints( std::vector<Position3D>& outPaths, const Positi
 	{
 		WARNING_MSG(fmt::format("Entity::navigatePathPoints(): space({}), entityID({}), not found navhandle!\n",
 			spaceID(), id()));
+
 		return false;
 	}
 
-	int resultCount = pNavHandle->findStraightPath(layer, position_, destination, outPaths);
-	if (resultCount < 0)
+	if (pNavHandle->findStraightPath(layer, position_, destination, outPaths) < 0)
 	{
 		return false;
 	}
@@ -1763,6 +1858,7 @@ bool Entity::navigatePathPoints( std::vector<Position3D>& outPaths, const Positi
 			iter++;
 			continue;
 		}
+
 		break;
 	}
 
@@ -1815,11 +1911,11 @@ PyObject* Entity::pyNavigatePathPoints(PyObject_ptr pyDestination, float maxSear
 }
 
 //-------------------------------------------------------------------------------------
-uint32 Entity::navigate(const Position3D& destination, float velocity, float distance, float maxMoveDistance, float maxDistance, 
+uint32 Entity::navigate(const Position3D& destination, float velocity, float distance, float maxMoveDistance, float maxSearchDistance,
 	bool faceMovement, int8 layer, PyObject* userData)
 {
 	VECTOR_POS3D_PTR paths_ptr( new std::vector<Position3D>() );
-	navigatePathPoints(*paths_ptr, destination, maxDistance, layer);
+	navigatePathPoints(*paths_ptr, destination, maxSearchDistance, layer);
 	if (paths_ptr->size() <= 0)
 	{
 		return 0;
@@ -1879,7 +1975,6 @@ PyObject* Entity::pyNavigate(PyObject_ptr pyDestination, float velocity, float d
 
 	// 将坐标信息提取出来
 	script::ScriptVector3::convertPyObjectToVector3(destination, pyDestination);
-	Py_INCREF(userData);
 
 	return PyLong_FromLong(navigate(destination, velocity, distance, maxMoveDistance, 
 		maxDistance, faceMovement > 0, layer, userData));
@@ -2007,7 +2102,6 @@ PyObject* Entity::pyMoveToPoint(PyObject_ptr pyDestination, float velocity, floa
 
 	// 将坐标信息提取出来
 	script::ScriptVector3::convertPyObjectToVector3(destination, pyDestination);
-	Py_INCREF(userData);
 
 	return PyLong_FromLong(moveToPoint(destination, velocity, distance, userData, faceMovement > 0, moveVertically > 0));
 }
@@ -2052,7 +2146,6 @@ PyObject* Entity::pyMoveToEntity(ENTITY_ID targetID, float velocity, float dista
 		return 0;
 	}
 
-	Py_INCREF(userData);
 	return PyLong_FromLong(moveToEntity(targetID, velocity, distance, userData, faceMovement > 0, moveVertically > 0));
 }
 
@@ -2140,7 +2233,6 @@ PyObject* Entity::pyAddYawRotator(float yaw, float velocity, PyObject* userData)
 		return 0;
 	}
 
-	Py_INCREF(userData);
 	return PyLong_FromLong(addYawRotator(yaw, velocity, userData));
 }
 
@@ -2737,6 +2829,40 @@ void Entity::teleportLocal(PyObject_ptr nearbyMBRef, Position3D& pos, Direction3
 
 	currspace->addEntityToNode(this);
 
+	std::list<ENTITY_ID>::iterator witer = witnesses_.begin();
+	for (; witer != witnesses_.end(); ++witer)
+	{
+		Entity* pEntity = Cellapp::getSingleton().findEntity((*witer));
+		if (pEntity == NULL || pEntity->pWitness() == NULL)
+			continue;
+
+		EntityMailbox* clientMailbox = pEntity->clientMailbox();
+		if (clientMailbox == NULL)
+			continue;
+
+		Network::Channel* pChannel = clientMailbox->getChannel();
+		if (pChannel == NULL)
+			continue;
+
+		// 这个可能性是存在的，例如数据来源于createWitnessFromStream()
+		// 又如自己的entity还未在目标客户端上创建
+		if (!pEntity->pWitness()->entityInAOI(id()))
+			continue;
+
+		// 通知位置强制改变
+		Network::Bundle* pSendBundle = Network::Bundle::ObjPool().createObject();
+		Network::Bundle* pForwardBundle = Network::Bundle::ObjPool().createObject();
+
+		(*pForwardBundle).newMessage(ClientInterface::onSetEntityPosAndDir);
+		(*pForwardBundle) << id();
+		(*pForwardBundle) << pos.x << pos.y << pos.z;
+		(*pForwardBundle) << direction().roll() << direction().pitch() << direction().yaw();
+
+		NETWORK_ENTITY_MESSAGE_FORWARD_CLIENT(pEntity->id(), (*pSendBundle), (*pForwardBundle));
+		this->pWitness()->sendToClient(ClientInterface::onSetEntityPosAndDir, pSendBundle);
+		Network::Bundle::ObjPool().reclaimObject(pForwardBundle);
+	}
+
 	onTeleportSuccess(nearbyMBRef, lastSpaceID);
 }
 
@@ -3038,9 +3164,14 @@ void Entity::addToStream(KBEngine::MemoryStream& s)
 		baseMailboxComponentID = baseMailbox_->componentID();
 	}
 
+	bool hasCustomVolatileinfo = (pCustomVolatileinfo_ != NULL);
+		
 	s << pScriptModule_->getUType() << spaceID_ << isDestroyed_ << 
 		isOnGround_ << topSpeed_ << topSpeedY_ << 
-		layer_ << baseMailboxComponentID;
+		layer_ << baseMailboxComponentID << hasCustomVolatileinfo;
+
+	if (pCustomVolatileinfo_)
+		pCustomVolatileinfo_->addToStream(s);
 
 	addCellDataToStream(ENTITY_CELL_DATA_FLAGS, &s);
 	
@@ -3057,9 +3188,18 @@ void Entity::createFromStream(KBEngine::MemoryStream& s)
 {
 	ENTITY_SCRIPT_UID scriptUType;
 	COMPONENT_ID baseMailboxComponentID;
+	bool hasCustomVolatileinfo;
 
 	s >> scriptUType >> spaceID_ >> isDestroyed_ >> isOnGround_ >> topSpeed_ >> 
-		topSpeedY_ >> layer_ >> baseMailboxComponentID;
+		topSpeedY_ >> layer_ >> baseMailboxComponentID >> hasCustomVolatileinfo;
+
+	if (hasCustomVolatileinfo)
+	{
+		if (!pCustomVolatileinfo_)
+			pCustomVolatileinfo_ = new VolatileInfo();
+
+		pCustomVolatileinfo_->createFromStream(s);
+	}
 
 	// 此时强制设置为不在地面，无法判定其是否在地面，角色需要客户端上报是否在地面
 	// 而服务端的NPC则与移动后是否在地面来判定。

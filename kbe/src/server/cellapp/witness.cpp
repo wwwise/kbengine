@@ -55,6 +55,7 @@ pEntity_(NULL),
 aoiRadius_(0.0f),
 aoiHysteresisArea_(5.0f),
 pAOITrigger_(NULL),
+pAOIHysteresisAreaTrigger_(NULL),
 aoiEntities_(),
 clientAOISize_(0)
 {
@@ -65,6 +66,7 @@ Witness::~Witness()
 {
 	pEntity_ = NULL;
 	SAFE_RELEASE(pAOITrigger_);
+	SAFE_RELEASE(pAOIHysteresisAreaTrigger_);
 }
 
 //-------------------------------------------------------------------------------------
@@ -123,6 +125,19 @@ void Witness::createFromStream(KBEngine::MemoryStream& s)
 			else
 			{
 				pAOITrigger_->update(aoiRadius_, aoiRadius_);
+			}
+
+			if (pAOIHysteresisAreaTrigger_ == NULL)
+			{
+				if (aoiHysteresisArea_ > 0.01f)
+				{
+					pAOIHysteresisAreaTrigger_ = new AOITrigger((CoordinateNode*)pEntity_->pEntityCoordinateNode(),
+						aoiHysteresisArea_ + aoiRadius_, aoiHysteresisArea_ + aoiRadius_);
+				}
+			}
+			else
+			{
+				pAOIHysteresisAreaTrigger_->update(aoiHysteresisArea_ + aoiRadius_, aoiHysteresisArea_ + aoiRadius_);
 			}
 		}
 	}
@@ -235,8 +250,10 @@ void Witness::clear(Entity* pEntity)
 	aoiRadius_ = 0.0f;
 	aoiHysteresisArea_ = 5.0f;
 	clientAOISize_ = 0;
-	SAFE_RELEASE(pAOITrigger_);
 
+	SAFE_RELEASE(pAOITrigger_);
+	SAFE_RELEASE(pAOIHysteresisAreaTrigger_);
+	
 	aoiEntities_.clear();
 
 	Cellapp::getSingleton().removeUpdatable(this);
@@ -281,9 +298,9 @@ void Witness::setAoiRadius(float radius, float hyst)
 		aoiHysteresisArea_ = 5.0f;
 	}
 
-	if(aoiRadius_ > 0.f)
+	if (aoiRadius_ > 0.f)
 	{
-		if(pAOITrigger_ == NULL)
+		if (pAOITrigger_ == NULL)
 		{
 			pAOITrigger_ = new AOITrigger((CoordinateNode*)pEntity_->pEntityCoordinateNode(), aoiRadius_, aoiRadius_);
 		}
@@ -291,12 +308,29 @@ void Witness::setAoiRadius(float radius, float hyst)
 		{
 			pAOITrigger_->update(aoiRadius_, aoiRadius_);
 		}
+
+		if (aoiHysteresisArea_ > 0.01f)
+		{
+			if (pAOIHysteresisAreaTrigger_ == NULL)
+			{
+				pAOIHysteresisAreaTrigger_ = new AOITrigger((CoordinateNode*)pEntity_->pEntityCoordinateNode(),
+					aoiHysteresisArea_ + aoiRadius_, aoiHysteresisArea_ + aoiRadius_);
+			}
+			else
+			{
+				pAOIHysteresisAreaTrigger_->update(aoiHysteresisArea_ + aoiRadius_, aoiHysteresisArea_ + aoiRadius_);
+			}
+		}
 	}
 }
 
 //-------------------------------------------------------------------------------------
-void Witness::onEnterAOI(Entity* pEntity)
+void Witness::onEnterAOI(AOITrigger* pAOITrigger, Entity* pEntity)
 {
+	// 如果进入的是Hysteresis区域，那么不产生作用
+	if (pAOIHysteresisAreaTrigger_ == pAOITrigger)
+		return;
+
 	pEntity_->onEnteredAoI(pEntity);
 
 	EntityRef::AOI_ENTITIES::iterator iter = std::find_if(aoiEntities_.begin(), aoiEntities_.end(), 
@@ -335,8 +369,12 @@ void Witness::onEnterAOI(Entity* pEntity)
 }
 
 //-------------------------------------------------------------------------------------
-void Witness::onLeaveAOI(Entity* pEntity)
+void Witness::onLeaveAOI(AOITrigger* pAOITrigger, Entity* pEntity)
 {
+	// 如果设置过Hysteresis区域，那么离开Hysteresis区域才算离开AOI
+	if (pAOIHysteresisAreaTrigger_ && pAOIHysteresisAreaTrigger_ != pAOITrigger)
+		return;
+
 	EntityRef::AOI_ENTITIES::iterator iter = std::find_if(aoiEntities_.begin(), aoiEntities_.end(), 
 		findif_vector_entityref_exist_by_entityid_handler(pEntity->id()));
 
@@ -415,17 +453,13 @@ void Witness::onEnterSpace(Space* pSpace)
 	Network::Bundle::ObjPool().reclaimObject(pForwardBundle);
 	Network::Bundle::ObjPool().reclaimObject(pForwardPosDirBundle);
 
-	if(pAOITrigger_)
-	{
-		pAOITrigger_->reinstall((CoordinateNode*)pEntity_->pEntityCoordinateNode());
-	}
+	installAOITrigger();
 }
 
 //-------------------------------------------------------------------------------------
 void Witness::onLeaveSpace(Space* pSpace)
 {
-	if(pAOITrigger_)
-		pAOITrigger_->uninstall();
+	uninstallAOITrigger();
 
 	Network::Bundle* pSendBundle = Network::Bundle::ObjPool().createObject();
 	Network::Bundle* pForwardBundle = Network::Bundle::ObjPool().createObject();
@@ -452,6 +486,34 @@ void Witness::onLeaveSpace(Space* pSpace)
 
 	aoiEntities_.clear();
 	clientAOISize_ = 0;
+}
+
+//-------------------------------------------------------------------------------------
+void Witness::installAOITrigger()
+{
+	if (pAOITrigger_)
+	{
+		pAOITrigger_->reinstall((CoordinateNode*)pEntity_->pEntityCoordinateNode());
+
+		if (pAOIHysteresisAreaTrigger_)
+		{
+			pAOIHysteresisAreaTrigger_->reinstall((CoordinateNode*)pEntity_->pEntityCoordinateNode());
+		}
+	}
+	else
+	{
+		KBE_ASSERT(pAOIHysteresisAreaTrigger_ == NULL);
+	}
+}
+
+//-------------------------------------------------------------------------------------
+void Witness::uninstallAOITrigger()
+{
+	if (pAOITrigger_)
+		pAOITrigger_->uninstall();
+
+	if (pAOIHysteresisAreaTrigger_)
+		pAOIHysteresisAreaTrigger_->uninstall();
 }
 
 //-------------------------------------------------------------------------------------
@@ -771,10 +833,6 @@ bool Witness::update()
 //-------------------------------------------------------------------------------------
 void Witness::addBasePosToStream(Network::Bundle* pSendBundle)
 {
-	const VolatileInfo& volatileInfo = pEntity_->pScriptModule()->getVolatileInfo();
-	if((volatileInfo.position() <= 0.0004f))
-		return;
-
 	const Position3D& bpos = basePos();
 	Vector3 movement = bpos - lastBasePos;
 
@@ -962,11 +1020,13 @@ uint32 Witness::addEntityVolatileDataToStream(MemoryStream* mstream, Entity* oth
 {
 	uint32 flags = UPDATE_FLAG_NULL;
 
-	const VolatileInfo& volatileInfo = otherEntity->pScriptModule()->getVolatileInfo();
-	
+	const VolatileInfo* pVolatileInfo = otherEntity->pCustomVolatileinfo();
+	if (!pVolatileInfo)
+		pVolatileInfo = otherEntity->pScriptModule()->getPVolatileInfo();
+
 	static uint16 entity_posdir_additional_updates = g_kbeSrvConfig.getCellApp().entity_posdir_additional_updates;
 	
-	if((volatileInfo.position() > 0.f) && (entity_posdir_additional_updates == 0 || g_kbetime - otherEntity->posChangedTime() < entity_posdir_additional_updates))
+	if ((pVolatileInfo->position() > 0.f) && (entity_posdir_additional_updates == 0 || g_kbetime - otherEntity->posChangedTime() < entity_posdir_additional_updates))
 	{
 		Position3D relativePos = otherEntity->position() - this->pEntity()->position();
 		mstream->appendPackXZ(relativePos.x, relativePos.z);
@@ -985,7 +1045,7 @@ uint32 Witness::addEntityVolatileDataToStream(MemoryStream* mstream, Entity* oth
 	if((entity_posdir_additional_updates == 0) || (g_kbetime - otherEntity->dirChangedTime() < entity_posdir_additional_updates))
 	{
 		const Direction3D& dir = otherEntity->direction();
-		if(volatileInfo.yaw() > 0.f && volatileInfo.roll() > 0.f && volatileInfo.pitch() > 0.f)
+		if (pVolatileInfo->yaw() > 0.f && pVolatileInfo->roll() > 0.f && pVolatileInfo->pitch() > 0.f)
 		{
 			(*mstream) << angle2int8(dir.yaw());
 			(*mstream) << angle2int8(dir.pitch());
@@ -993,40 +1053,40 @@ uint32 Witness::addEntityVolatileDataToStream(MemoryStream* mstream, Entity* oth
 
 			flags |= UPDATE_FLAG_YAW_PITCH_ROLL; 
 		}
-		else if(volatileInfo.roll() > 0.f && volatileInfo.pitch() > 0.f)
+		else if (pVolatileInfo->roll() > 0.f && pVolatileInfo->pitch() > 0.f)
 		{
 			(*mstream) << angle2int8(dir.pitch());
 			(*mstream) << angle2int8(dir.roll());
 
 			flags |= UPDATE_FLAG_PITCH_ROLL; 
 		}
-		else if(volatileInfo.yaw() > 0.f && volatileInfo.pitch() > 0.f)
+		else if (pVolatileInfo->yaw() > 0.f && pVolatileInfo->pitch() > 0.f)
 		{
 			(*mstream) << angle2int8(dir.yaw());
 			(*mstream) << angle2int8(dir.pitch());
 
 			flags |= UPDATE_FLAG_YAW_PITCH; 
 		}
-		else if(volatileInfo.yaw() > 0.f && volatileInfo.roll() > 0.f)
+		else if (pVolatileInfo->yaw() > 0.f && pVolatileInfo->roll() > 0.f)
 		{
 			(*mstream) << angle2int8(dir.yaw());
 			(*mstream) << angle2int8(dir.roll());
 
 			flags |= UPDATE_FLAG_YAW_ROLL; 
 		}
-		else if(volatileInfo.yaw() > 0.f)
+		else if (pVolatileInfo->yaw() > 0.f)
 		{
 			(*mstream) << angle2int8(dir.yaw());
 
 			flags |= UPDATE_FLAG_YAW; 
 		}
-		else if(volatileInfo.roll() > 0.f)
+		else if (pVolatileInfo->roll() > 0.f)
 		{
 			(*mstream) << angle2int8(dir.roll());
 
 			flags |= UPDATE_FLAG_ROLL; 
 		}
-		else if(volatileInfo.pitch() > 0.f)
+		else if (pVolatileInfo->pitch() > 0.f)
 		{
 			(*mstream) << angle2int8(dir.pitch());
 
